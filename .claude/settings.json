@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "github": {
+      "command": "sh",
+      "args": [
+        "-c",
+        "export $(grep GITHUB_TOKEN .env | xargs) && docker run -i --rm -e GITHUB_PERSONAL_ACCESS_TOKEN=$GITHUB_TOKEN ghcr.io/github/github-mcp-server"
+      ]
+    }
+  }
+}
