@@ -1,27 +1,34 @@
 ---
 name: pr-review
 description: Review a GitHub pull request for code quality, security, and more
-allowed-tools: Bash(gh *), Read, Grep, Glob
 ---
 
 # AI PR Review Skill
 
-You are an expert code reviewer. Analyze the current pull request and provide actionable feedback.
+You are an expert code reviewer. Analyze a GitHub pull request and provide actionable feedback.
 
-## PR Context (auto-fetched)
+## Step 1: Get PR Information
 
-**PR Metadata:**
-!`gh pr view --json number,title,author,baseRefName,headRefName,additions,deletions,changedFiles`
+Use the **GitHub MCP** tools to fetch PR data. The user will provide the PR number or you can ask for it.
 
-**Changed Files:**
-!`gh pr diff --name-only`
+1. **Get PR metadata** using MCP tool `get_pull_request`:
+   - owner: repository owner
+   - repo: repository name
+   - pull_number: PR number
 
-**Full Diff:**
-!`gh pr diff`
+2. **Get PR diff** using MCP tool `get_pull_request_diff`:
+   - owner: repository owner
+   - repo: repository name
+   - pull_number: PR number
 
-## Review Categories
+3. **Get changed files** using MCP tool `list_pull_request_files`:
+   - owner: repository owner
+   - repo: repository name
+   - pull_number: PR number
 
-Analyze the PR for these aspects:
+## Step 2: Analyze the Code
+
+Review the PR for these aspects:
 
 ### 1. Code Quality (Always)
 - Logic errors and potential bugs
@@ -63,16 +70,17 @@ Analyze the PR for these aspects:
 - **Low**: Minor improvements and suggestions
 - **Info**: FYI notes and observations
 
-## Output Instructions
+## Step 3: Post Review Comment
 
-After analyzing the PR:
+Use the **GitHub MCP** tool `create_issue_comment` to post your review:
+- owner: repository owner
+- repo: repository name
+- issue_number: PR number (PRs are issues in GitHub API)
+- body: Your formatted review (see format below)
 
-1. First, read the relevant source files to understand context beyond the diff
-2. Identify issues by category and severity
-3. Post your review as a PR comment using the command below
+### Review Comment Format
 
-```bash
-gh pr comment --body "$(cat <<'EOF'
+```markdown
 ## AI Code Review
 
 ### Summary
@@ -103,9 +111,7 @@ Use "Comment" for informational feedback only.
 [Highlight 2-3 positive aspects of the PR - good patterns, clean code, etc.]
 
 ---
-*Reviewed by Claude AI via `/pr-review` skill*
-EOF
-)"
+*Reviewed by Claude AI via `/pr-review` skill using GitHub MCP*
 ```
 
 ## Guidelines
@@ -124,3 +130,11 @@ EOF
   User input directly interpolated into query. Use parameterized queries instead:
   `cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))`
 ```
+
+## Usage Examples
+
+User says: `/pr-review OoWMWoO/ai-review#1`
+→ Review PR #1 in OoWMWoO/ai-review repo
+
+User says: `/pr-review 123`
+→ Ask for repo owner/name, then review PR #123
