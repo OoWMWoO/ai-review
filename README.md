@@ -9,6 +9,18 @@ Automated GitHub PR code reviews powered by Claude Code.
 - Analyzes code quality and security
 - Posts review comments directly to the PR
 
+## TL;DR - Run the Services
+
+```bash
+# Terminal 1: Start smee proxy (replace YOUR_CHANNEL with your smee.io URL)
+smee -u https://smee.io/YOUR_CHANNEL -t http://localhost:3000
+
+# Terminal 2: Start webhook listener
+uv run python webhook_listener.py
+```
+
+Both must be running for automated PR reviews to work.
+
 ## Prerequisites
 
 - [Claude Code CLI](https://claude.ai/claude-code) installed and logged in
@@ -85,14 +97,23 @@ npm install -g smee-client
 
 ### 3. Start the Services
 
-Terminal 1 - Smee proxy:
+> **Important:** Both services must be running for automated reviews to work!
+
+**Terminal 1** - Smee proxy (forwards GitHub webhooks to localhost):
 ```bash
 smee -u https://smee.io/YOUR_CHANNEL -t http://localhost:3000
 ```
 
-Terminal 2 - Webhook listener:
+**Terminal 2** - Webhook listener (receives events and triggers Claude):
 ```bash
 uv run python webhook_listener.py
+```
+
+You should see:
+```
+🤖 AI PR Review - Local Webhook Listener
+📡 Listening on http://localhost:3000
+⏳ Waiting for webhook events...
 ```
 
 ### 4. Trigger Reviews
