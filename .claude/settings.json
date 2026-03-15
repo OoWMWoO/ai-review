@@ -2,6 +2,7 @@
   "permissions": {
     "allow": [
       "Agent",
+      "Write",
       "Bash(gh pr *)",
       "Bash(gh api *)",
       "Bash(ruff *)",
