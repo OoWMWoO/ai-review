@@ -146,7 +146,7 @@ Then synthesize all three sources (lint report, security report, your quality re
 2. Escalate severity if two or more agents flag the same issue
 3. Determine recommendation: **Request Changes** if any Critical/High exist, **Approve** if only Medium/Low/Info, **Comment** if informational only
 
-Write the review to `/tmp/pr_review_NUMBER.md` using the Write tool, then post it with:
+Write the review to the absolute path `/tmp/pr_review_NUMBER.md` using the Write tool (e.g. for PR #42: `/tmp/pr_review_42.md`). Do NOT use a relative path — always use the full `/tmp/` prefix. Then post it with:
 
 ```bash
 gh pr comment NUMBER --repo OWNER/REPO --body-file /tmp/pr_review_NUMBER.md
