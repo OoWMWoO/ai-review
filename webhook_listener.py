@@ -17,16 +17,42 @@ import json
 import os
 import subprocess
 import threading
+import time
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
 PORT = 3000
 WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
+
+# ── ANSI helpers ───────────────────────────────────────────────────────────────
+_R = "\033[0m"
+_BOLD = "\033[1m"
+_DIM = "\033[2m"
+
+_TAGS: dict[str, str] = {
+    "ready":   f"\033[32m ready  {_R}",  # green
+    "event":   f"\033[34m event  {_R}",  # blue
+    "start":   f"\033[36m start  {_R}",  # cyan
+    "done":    f"\033[32m done   {_R}",  # green
+    "error":   f"\033[31m error  {_R}",  # red
+    "auth":    f"\033[31m auth   {_R}",  # red
+    "wait":    f"\033[33m wait   {_R}",  # yellow
+    "timeout": f"\033[33m timeout{_R}",  # yellow
+}
+
+
+def _log(level: str, message: str) -> None:
+    ts = datetime.now().strftime("%H:%M:%S")
+    tag = _TAGS.get(level, f" {level:<7}")
+    print(f"  {_DIM}{ts}{_R}  {tag}  {message}", flush=True)
+
+
+# ── Webhook handler ────────────────────────────────────────────────────────────
 
 
 class WebhookHandler(BaseHTTPRequestHandler):
@@ -36,37 +62,51 @@ class WebhookHandler(BaseHTTPRequestHandler):
         """Process POST requests from GitHub webhooks."""
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length)
+        event_type = self.headers.get("X-GitHub-Event", "unknown")
+        _log("event", f"received  {event_type}")
 
-        # Verify signature if secret is configured
         if WEBHOOK_SECRET:
             signature = self.headers.get("X-Hub-Signature-256", "")
             if not self._verify_signature(body, signature):
                 self.send_response(401)
                 self.end_headers()
                 self.wfile.write(b"Invalid signature")
-                print("❌ Invalid webhook signature")
+                _log("auth", "rejected — invalid webhook signature")
                 return
+            _log("auth", "signature ok")
+        else:
+            _log("auth", "no secret configured — skipping verification")
 
-        # Parse event
-        event_type = self.headers.get("X-GitHub-Event", "")
         payload = json.loads(body.decode("utf-8"))
 
-        print(f"\n📥 Received event: {event_type}")
-
-        # Handle PR events
         if event_type == "pull_request":
             action = payload.get("action", "")
+            _log("event", f"pull_request action={action!r}")
             if action in ("opened", "synchronize", "reopened"):
                 self._handle_pr_event(payload)
+            else:
+                _log("event", f"ignored — action {action!r} not in (opened, synchronize, reopened)")
 
-        # Handle comment trigger
         elif event_type == "issue_comment":
             action = payload.get("action", "")
-            comment_body = payload.get("comment", {}).get("body", "").lower()
+            comment_body = payload.get("comment", {}).get("body", "")
             is_pr = "pull_request" in payload.get("issue", {})
-
-            if action == "created" and is_pr and "hey ai review" in comment_body:
+            has_trigger = "hey ai review" in comment_body.lower()
+            _log("event", f"issue_comment  action={action!r}  is_pr={is_pr}  has_trigger={has_trigger}  body={comment_body[:60]!r}")
+            if action == "created" and is_pr and has_trigger:
                 self._handle_comment_trigger(payload)
+            else:
+                reasons = []
+                if action != "created":
+                    reasons.append(f"action={action!r} (need 'created')")
+                if not is_pr:
+                    reasons.append("not a PR comment")
+                if not has_trigger:
+                    reasons.append(f"trigger phrase 'hey ai review' not found in {comment_body[:40]!r}")
+                _log("event", f"ignored — {', '.join(reasons)}")
+
+        else:
+            _log("event", f"ignored — unhandled event type {event_type!r}")
 
         self.send_response(200)
         self.end_headers()
@@ -90,16 +130,14 @@ class WebhookHandler(BaseHTTPRequestHandler):
         """Handle pull request events."""
         pr = payload.get("pull_request", {})
         repo = payload.get("repository", {})
-
         pr_number = pr.get("number")
-        repo_full_name = repo.get("full_name")
+        repo_full = repo.get("full_name")
         action = payload.get("action")
 
-        print(f"🔄 PR #{pr_number} {action} in {repo_full_name}")
-        # Run review in background thread to respond to webhook quickly
+        _log("event", f"pull_request:{action}  ·  {repo_full}#{pr_number}")
         thread = threading.Thread(
             target=self._trigger_review,
-            args=(repo_full_name, pr_number),
+            args=(repo_full, pr_number),
             daemon=True,
         )
         thread.start()
@@ -108,104 +146,103 @@ class WebhookHandler(BaseHTTPRequestHandler):
         """Handle comment-triggered reviews."""
         issue = payload.get("issue", {})
         repo = payload.get("repository", {})
-
         pr_number = issue.get("number")
-        repo_full_name = repo.get("full_name")
+        repo_full = repo.get("full_name")
 
-        print(f"💬 Review triggered by comment on PR #{pr_number}")
-        # Run review in background thread to respond to webhook quickly
+        _log("event", f"issue_comment:triggered  ·  {repo_full}#{pr_number}")
         thread = threading.Thread(
             target=self._trigger_review,
-            args=(repo_full_name, pr_number),
+            args=(repo_full, pr_number),
             daemon=True,
         )
         thread.start()
 
     def _trigger_review(self, repo: str, pr_number: int) -> None:
         """Trigger Claude Code to review the PR."""
-        print(f"🚀 Starting review for {repo}#{pr_number}...")
+        ref = f"{repo}#{pr_number}"
+        _log("start", ref)
+        started = time.monotonic()
+        stop_ticker = threading.Event()
+
+        def _ticker() -> None:
+            """Log a heartbeat every 60 s while the review is running."""
+            while not stop_ticker.wait(timeout=60):
+                elapsed = time.monotonic() - started
+                _log("wait", f"{ref}  still running  ({elapsed / 60:.0f}m elapsed)")
+
+        ticker_thread = threading.Thread(target=_ticker, daemon=True)
+        ticker_thread.start()
 
         try:
-            # Get Claude path
             claude_path = os.path.expanduser("~/.local/bin/claude")
             if not os.path.exists(claude_path):
-                claude_path = "claude"  # Fallback to PATH
+                claude_path = "claude"
 
-            # Run Claude Code with the pr-review skill
-            # Use allowedTools to explicitly permit gh commands
-            # Pass prompt via stdin for --print mode
-            prompt = f"/pr-review {repo}#{pr_number}"
             cmd = [
                 claude_path,
                 "--print",
                 "--allowedTools",
-                "Bash(gh:*),Read,Grep,Glob",
+                "Agent,Bash(gh:*),Bash(ruff:*),Bash(mypy:*),Bash(bandit:*),Bash(safety:*),Read,Write,Grep,Glob",
             ]
-            print(f"   Running: {' '.join(cmd)}")
-            print(f"   Prompt: {prompt}")
 
-            # Pass full environment including PATH for Docker access
             env = os.environ.copy()
             env["PATH"] = f"/opt/homebrew/bin:/usr/local/bin:{env.get('PATH', '')}"
-
-            # Remove API key to use Claude Max subscription/OAuth login instead
             if "ANTHROPIC_API_KEY" in env:
                 del env["ANTHROPIC_API_KEY"]
-                print("   Using Claude subscription (not API key)")
 
             result = subprocess.run(
                 cmd,
-                input=prompt,  # Pass prompt via stdin
+                input=f"/pr-review {ref}",
                 capture_output=True,
                 text=True,
-                timeout=300,  # 5 minute timeout
+                timeout=900,  # 15 minute timeout (multi-agent: lint + security + synthesis)
                 env=env,
-                cwd=os.path.dirname(os.path.abspath(__file__)),  # Run in project dir
+                cwd=os.path.dirname(os.path.abspath(__file__)),
                 check=False,
             )
 
+            elapsed = time.monotonic() - started
+            duration = f"{elapsed:.0f}s" if elapsed < 60 else f"{elapsed / 60:.1f}m"
+
             if result.returncode == 0:
-                print(f"✅ Review completed for {repo}#{pr_number}")
-                if result.stdout:
-                    print(f"   Output: {result.stdout[:500]}...")
+                _log("done", f"{ref}  ({duration})")
             else:
-                print(f"❌ Review failed (exit code {result.returncode})")
-                if result.stderr:
-                    print(f"   Stderr: {result.stderr}")
-                if result.stdout:
-                    print(f"   Stdout: {result.stdout}")
+                _log("error", f"{ref}  exit={result.returncode}  ({duration})")
 
         except subprocess.TimeoutExpired:
-            print(f"⏰ Review timed out for {repo}#{pr_number}")
-        except FileNotFoundError as e:
-            print(f"❌ Claude Code CLI not found: {e}")
-            print(f"   Tried: {claude_path}")
+            elapsed = time.monotonic() - started
+            _log("timeout", f"{ref}  exceeded {elapsed / 60:.0f}m limit")
+        except FileNotFoundError:
+            _log("error", f"{ref}  claude CLI not found — is it installed?")
         except Exception as e:
-            print(f"❌ Error: {type(e).__name__}: {e}")
+            _log("error", f"{ref}  {type(e).__name__}: {e}")
+        finally:
+            stop_ticker.set()
 
     def log_message(self, _fmt: str, *_args: Any) -> None:
-        """Suppress default HTTP logging."""
+        """Suppress default HTTP server access logs."""
+
+
+# ── Entry point ────────────────────────────────────────────────────────────────
 
 
 def main() -> None:
     """Start the webhook listener server."""
-    print("=" * 50)
-    print("🤖 AI PR Review - Local Webhook Listener")
-    print("=" * 50)
-    print(f"\n📡 Listening on http://localhost:{PORT}")
-    print("\n📋 Setup instructions:")
-    print("   1. Install smee-client: npm install -g smee-client")
-    print("   2. Run smee: smee -u $SMEE_URL -t http://localhost:3000")
-    print("   3. Configure GitHub webhook to point to your SMEE_URL")
-    print("\n⏳ Waiting for webhook events...")
-    print("-" * 50)
+    print()
+    print(f"  {_BOLD}ai-review{_R}  webhook listener  ·  http://localhost:{PORT}")
+    print()
+    print(f"  {_DIM}forward events:  smee -u $SMEE_URL -t http://localhost:{PORT}{_R}")
+    print()
 
     server = HTTPServer(("localhost", PORT), WebhookHandler)
+    _log("ready", f"listening on :{PORT}")
+    print()
 
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n\n👋 Shutting down...")
+        print()
+        print(f"  {_DIM}shutting down{_R}")
         server.shutdown()
 
 

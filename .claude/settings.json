@@ -1,8 +1,14 @@
 {
   "permissions": {
     "allow": [
+      "Agent",
+      "Write",
       "Bash(gh pr *)",
       "Bash(gh api *)",
+      "Bash(ruff *)",
+      "Bash(mypy *)",
+      "Bash(bandit *)",
+      "Bash(safety *)",
       "Read",
       "Grep",
       "Glob"

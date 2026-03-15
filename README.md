@@ -1,205 +1,192 @@
 # AI PR Review
 
-Automated GitHub PR code reviews powered by Claude Code.
+Automated GitHub PR code reviews powered by Claude Code. Reviews are triggered automatically when a PR is opened or updated, or on demand via a comment.
 
-## Features
+## How It Works
 
-- Automatic PR reviews on PR open/update
-- On-demand reviews via PR comment ("hey ai review")
-- Analyzes code quality and security
-- Posts review comments directly to the PR
-
-## TL;DR - Run the Services
-
-```bash
-# Terminal 1: Start smee proxy (replace YOUR_CHANNEL with your smee.io URL)
-smee -u https://smee.io/YOUR_CHANNEL -t http://localhost:3000
-
-# Terminal 2: Start webhook listener
-uv run python webhook_listener.py
+```
+GitHub PR event
+    ↓  (webhook)
+Smee.io proxy  →  localhost:3000  →  webhook_listener.py
+                                          ↓
+                                   claude --print /pr-review
+                                          ↓
+                                   gh pr view / gh pr diff
+                                          ↓
+                                   AI analysis (fast or multi-agent)
+                                          ↓
+                                   gh pr comment → GitHub PR
 ```
 
-Both must be running for automated PR reviews to work.
+Reviews are posted as a comment on the PR with security findings, lint issues, code quality analysis, and an Approve / Request Changes recommendation.
 
 ## Prerequisites
 
-- [Claude Code CLI](https://claude.ai/claude-code) installed and logged in
-- [GitHub CLI](https://cli.github.com/) (`gh`) installed and authenticated
-- [direnv](https://direnv.net/) (optional, for auto-loading env vars)
-- [Docker](https://www.docker.com/) (for GitHub MCP server)
-- Python 3.13+ with [uv](https://github.com/astral-sh/uv)
+| Tool | Purpose |
+|------|---------|
+| [Claude Code CLI](https://claude.ai/claude-code) | Runs the review skill — must be logged in |
+| [GitHub CLI](https://cli.github.com/) (`gh`) | Fetches PR data and posts comments — must be authenticated |
+| [Python 3.13+](https://python.org) + [uv](https://github.com/astral-sh/uv) | Runs the webhook listener |
+| [smee-client](https://github.com/probot/smee-client) | Proxies GitHub webhooks to localhost |
 
-## Quick Start
+Docker is **not required**.
 
-### 1. Clone and Setup
+## Setup
+
+### 1. Clone and install
 
 ```bash
 git clone https://github.com/OoWMWoO/ai-review.git
 cd ai-review
-
-# Install dependencies
 uv sync
 ```
 
-### 2. Configure Environment
+### 2. Authenticate tools
+
+```bash
+# Claude Code — log in with your Claude subscription
+claude login
+
+# GitHub CLI — authenticate
+gh auth login
+```
+
+### 3. Configure environment
 
 Create a `.env` file:
 
 ```bash
-# GitHub Personal Access Token (for MCP server)
-# Create at: https://github.com/settings/tokens
-# Required scopes: repo (for private repos) or public_repo
-GITHUB_TOKEN=ghp_your_token_here
-
-# Webhook secret (generate with: openssl rand -hex 32)
-GITHUB_WEBHOOK_SECRET=your_webhook_secret_here
+# Webhook signature secret — generate with: openssl rand -hex 32
+GITHUB_WEBHOOK_SECRET=your_secret_here
 ```
 
-If using direnv:
-```bash
-direnv allow
-```
+> `ANTHROPIC_API_KEY` must NOT be set — the listener deliberately removes it so Claude uses your subscription instead of the API (which costs credits).
 
-### 3. Manual Review (Interactive)
+### 4. Set up GitHub webhook
 
-Review the current PR in your terminal:
-
-```bash
-claude /pr-review
-```
-
-Or specify a PR:
-
-```bash
-claude "/pr-review owner/repo#123"
-```
-
-## Automated Reviews (Webhook)
-
-### 1. Setup Smee.io (for local development)
-
-```bash
-# Install smee client
-npm install -g smee-client
-
-# Create a channel at https://smee.io/new
-# Copy the webhook URL
-```
-
-### 2. Configure GitHub Webhook
-
-1. Go to your repo → Settings → Webhooks → Add webhook
-2. Set:
-   - **Payload URL**: Your smee.io URL
+1. Go to your repo → **Settings → Webhooks → Add webhook**
+2. Configure:
+   - **Payload URL**: your Smee.io channel URL (create one free at [smee.io/new](https://smee.io/new))
    - **Content type**: `application/json`
-   - **Secret**: Same as `GITHUB_WEBHOOK_SECRET` in `.env`
-   - **Events**: Select "Pull requests" and "Issue comments"
+   - **Secret**: same value as `GITHUB_WEBHOOK_SECRET`
+   - **Events**: `Pull requests` + `Issue comments`
 
-### 3. Start the Services
+### 5. Install smee client
 
-> **Important:** Both services must be running for automated reviews to work!
+```bash
+npm install -g smee-client
+```
 
-**Terminal 1** - Smee proxy (forwards GitHub webhooks to localhost):
+## Running
+
+Both services must be running at the same time.
+
+**Terminal 1** — forward GitHub webhooks to localhost:
 ```bash
 smee -u https://smee.io/YOUR_CHANNEL -t http://localhost:3000
 ```
 
-**Terminal 2** - Webhook listener (receives events and triggers Claude):
+**Terminal 2** — start the webhook listener:
 ```bash
 uv run python webhook_listener.py
 ```
 
 You should see:
 ```
-🤖 AI PR Review - Local Webhook Listener
-📡 Listening on http://localhost:3000
-⏳ Waiting for webhook events...
+  ai-review  webhook listener  ·  http://localhost:3000
+
+  forward events:  smee -u $SMEE_URL -t http://localhost:3000
+
+  22:00:00   ready    listening on :3000
 ```
 
-### 4. Trigger Reviews
+## Triggering a Review
 
-Reviews trigger automatically when you:
+### Automatic
+Reviews run automatically when you:
 - Open a new PR
-- Push commits to an existing PR
-- Comment "hey ai review" on a PR
+- Push new commits to an existing PR
+- Reopen a PR
+
+### On demand
+Comment on any PR:
+```
+hey ai review
+```
 
 ## Review Output
 
-The AI posts a comment with:
+The AI posts a comment to the PR:
 
-- **Summary**: What the PR does
-- **Recommendation**: Approve / Request Changes / Comment
-- **Findings** by severity:
-  - Critical (security vulnerabilities, breaking bugs)
-  - High (significant issues)
-  - Medium (code smells)
-  - Low/Info (suggestions)
-- **What's Good**: Positive aspects of the PR
+```markdown
+## 🤖 AI Code Review — Python Multi-Agent
 
-## Configuration
+### Summary
+...
 
-### Allowed Tools
+### Recommendation
+**Approve** | **Request Changes** | **Comment**
 
-Edit `.claude/settings.json` to modify permissions:
-
-```json
-{
-  "permissions": {
-    "allow": [
-      "Bash(gh pr *)",
-      "Bash(gh api *)",
-      "Read",
-      "Grep",
-      "Glob"
-    ]
-  }
-}
+### 🔒 Security Findings
+### 🧹 Lint & Style Findings
+### 🏗️ Code Quality Findings
+### ✅ What's Good
 ```
 
-### Review Categories
+### Review modes
 
-The skill reviews for:
-- **Code Quality** (always): Logic errors, complexity, error handling
-- **Security** (always): Injection vulnerabilities, auth flaws, secrets
+| PR size | Mode | Time |
+|---------|------|------|
+| ≤ 8 Python files, < 400 diff lines | Fast — single-pass review | ~2–3 min |
+| Larger PRs | Full — specialist agent + orchestrator | ~5–8 min |
 
-Optional (add flags to your comment):
-- `+perf`: Performance issues
-- `+style`: Code style and formatting
-- `+docs`: Documentation quality
-- `+tests`: Test coverage
+## Terminal Logs
 
-Example: "hey ai review +perf +tests"
+```
+  22:01:34   event    received  issue_comment
+  22:01:34   auth     signature ok
+  22:01:34   event    issue_comment:triggered  ·  OoWMWoO/ai-review#3
+  22:01:34   start    OoWMWoO/ai-review#3
+  22:02:34   wait     OoWMWoO/ai-review#3  still running  (1m elapsed)
+  22:03:51   done     OoWMWoO/ai-review#3  (2.3m)
+```
 
 ## Troubleshooting
 
-### "Credit balance is too low"
+**No `event` lines appear when a PR is opened/commented**
+- Check smee is running and forwarding to the correct port
+- Verify the GitHub webhook is pointed at your Smee URL
+- Check the webhook delivery log in GitHub (repo → Settings → Webhooks → Recent Deliveries)
 
-The webhook is using an API key instead of your Claude subscription. Ensure `ANTHROPIC_API_KEY` is NOT set in your environment when running the listener.
+**`auth  rejected — invalid webhook signature`**
+- `GITHUB_WEBHOOK_SECRET` in `.env` doesn't match the secret in GitHub webhook settings
 
-### Review runs but doesn't post comment
+**`error  claude CLI not found`**
+- Run `claude --version` to confirm it's installed and on PATH
 
-Check that:
-1. `gh` CLI is authenticated: `gh auth status`
-2. Permissions are set in `.claude/settings.json`
-3. Docker is running (for MCP server)
+**Review runs but no comment appears on GitHub**
+- Run `gh auth status` — must be authenticated
+- Check `gh pr comment` works manually: `gh pr comment 1 --repo owner/repo --body "test"`
 
-### Webhook signature invalid
+**`timeout  exceeded 15m limit`**
+- PR is very large — increase `timeout=900` in `webhook_listener.py`
 
-Ensure `GITHUB_WEBHOOK_SECRET` in `.env` matches the secret configured in GitHub webhook settings.
+**"Credit balance is too low"**
+- `ANTHROPIC_API_KEY` is set in your environment — remove it so Claude uses subscription auth
 
 ## Project Structure
 
 ```
 ai-review/
 ├── .claude/
-│   ├── settings.json      # MCP and permissions config
+│   ├── settings.json          # Tool permissions
 │   └── skills/
 │       └── pr-review/
-│           └── SKILL.md   # PR review skill definition
-├── webhook_listener.py    # Local webhook server
-├── .env                   # Environment variables (not committed)
-├── .envrc                 # direnv configuration
-└── .gitignore
+│           └── SKILL.md       # Review skill — edit to customise analysis
+├── webhook_listener.py        # Webhook server and Claude orchestration
+├── .env                       # Secrets (not committed)
+├── .envrc                     # direnv config
+└── pyproject.toml
 ```
 
 ## License

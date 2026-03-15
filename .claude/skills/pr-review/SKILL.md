@@ -1,140 +1,261 @@
 ---
 name: pr-review
-description: Review a GitHub pull request for code quality, security, and more
+description: Review a GitHub pull request with parallel lint, security, and code quality agents (Python-optimised)
 ---
 
-# AI PR Review Skill
+# AI PR Review — Python Multi-Agent
 
-You are an expert code reviewer. Analyze a GitHub pull request and provide actionable feedback.
+You are the **orchestrator** for a Python PR review pipeline. You coordinate two specialist agents then synthesize their reports into a single unified review comment.
 
-## Step 1: Get PR Information
+## Step 1: Fetch PR Data
 
-Use the **GitHub MCP** tools to fetch PR data. The user will provide the PR number or you can ask for it.
+Parse `owner/repo#NUMBER` from the input. Use `gh` CLI via Bash — no MCP, no Docker:
 
-1. **Get PR metadata** using MCP tool `get_pull_request`:
-   - owner: repository owner
-   - repo: repository name
-   - pull_number: PR number
+```bash
+# PR metadata
+gh pr view NUMBER --repo OWNER/REPO --json number,title,body,author,baseRefName,headRefName,state,labels
 
-2. **Get PR diff** using MCP tool `get_pull_request_diff`:
-   - owner: repository owner
-   - repo: repository name
-   - pull_number: PR number
+# Full unified diff
+gh pr diff NUMBER --repo OWNER/REPO
 
-3. **Get changed files** using MCP tool `list_pull_request_files`:
-   - owner: repository owner
-   - repo: repository name
-   - pull_number: PR number
+# Changed files with patch stats
+gh pr view NUMBER --repo OWNER/REPO --json files
+```
 
-## Step 2: Analyze the Code
+Store the diff text and file list — you will pass them verbatim to sub-agents.
 
-Review the PR for these aspects:
+## Step 2: Decide Review Mode
 
-### 1. Code Quality (Always)
-- Logic errors and potential bugs
-- Code complexity and maintainability
-- Error handling completeness
-- SOLID principles adherence
-- Resource management
+Count the changed Python files and total diff lines from Step 1.
 
-### 2. Security (Always)
-- Injection vulnerabilities (SQL, XSS, command injection)
-- Authentication/authorization flaws
-- Hardcoded secrets or credentials
-- Sensitive data exposure in logs or errors
+| Condition | Mode |
+|-----------|------|
+| ≤ 8 `.py` files changed **AND** diff < 400 lines | **Fast** — single-pass review (you do it all, no sub-agents) |
+| Everything else | **Full** — spawn one Combined Specialist Agent, then synthesize |
 
-### 3. Performance (Optional - when user requests with "+perf")
-- N+1 query patterns
-- Memory leaks or excessive allocations
-- Inefficient algorithms
+Print your decision: `[REVIEW MODE: fast]` or `[REVIEW MODE: full]` before proceeding.
 
-### 4. Style (Optional - when user requests with "+style")
-- Naming conventions
-- Code formatting consistency
-- Idiomatic patterns for the language
+---
 
-### 5. Documentation (Optional - when user requests with "+docs")
-- Missing or incomplete docstrings
-- Outdated comments
-- Grammar issues
+### Fast Mode — Single-Pass Review
 
-### 6. Testing (Optional - when user requests with "+tests")
-- Missing test coverage for new code
-- Test quality and edge cases
+Skip sub-agents. You review the diff directly, covering all of:
+- Security: injection, hardcoded secrets, auth gaps, insecure deserialization
+- Lint: PEP 8, naming, imports, type annotations, docstrings
+- Code quality: logic bugs, error handling, resource leaks, complexity
+
+Go straight to **Step 3** to post the comment. Use the same comment format but replace the agent attribution lines with `> Single-pass review`.
+
+---
+
+### Full Mode — Launch One Combined Specialist Agent
+
+Use the `Agent` tool to spawn **one** specialist agent. Pass the full diff and file list in its prompt. While it runs, you perform your own code quality pass on the same diff in parallel.
+
+---
+
+### Combined Specialist Agent — Lint + Security
+
+```
+You are a Python lint and security expert reviewing a PR diff. Return ONLY a JSON object — no markdown, no explanation.
+
+DIFF:
+<<<DIFF>>>
+
+CHANGED FILES:
+<<<FILES>>>
+
+Attempt to run these tools on any changed .py files (use filenames from the diff):
+- ruff check --select ALL --output-format=json <file> 2>&1
+- mypy <file> --ignore-missing-imports --no-error-summary 2>&1 | head -40
+- bandit -r <file> -f json -q 2>&1
+- safety check 2>&1 | head -20  (only if requirements.txt or pyproject.toml changed)
+
+Then manually analyse the diff for both lint and security issues:
+
+LINT:
+1. PEP 8: line length >100, whitespace, blank lines between functions/classes
+2. Naming: snake_case functions/vars, PascalCase classes, UPPER_CASE constants
+3. Imports: stdlib → third-party → local ordering, no wildcard or unused imports
+4. Type annotations: missing on public functions, overly broad types (e.g. Any)
+5. Complexity: functions >25 lines, nested conditionals >3 levels
+6. Pythonic style: f-strings, comprehensions, context managers for resources
+7. Dead code: unreachable branches, variables assigned but never used
+8. Docstrings: missing on public functions/classes/modules
+
+SECURITY:
+1. Injection: SQL string interpolation, command injection (shell=True, os.system), SSTI
+2. Hardcoded secrets: API keys, passwords, tokens, private keys
+3. Insecure deserialization: pickle.loads() on untrusted data, yaml.load() without safe Loader
+4. Path traversal: unsanitised user input in os.path.join() or open()
+5. SSRF: user-controlled URLs in requests calls without an allowlist
+6. Weak crypto: MD5/SHA1 for passwords, ECB mode, hardcoded IV/salt, random vs secrets module
+7. Auth gaps: missing auth checks, JWT alg confusion, session fixation
+8. Sensitive data in logs or error responses
+9. Dependency risks: new unrecognised packages in requirements.txt / pyproject.toml
+10. Race conditions: TOCTOU on files, unsynchronised shared state
+
+Return this exact JSON shape:
+{
+  "tool_output": {
+    "ruff": "<raw output or null>",
+    "mypy": "<raw output or null>",
+    "bandit": "<raw output or null>",
+    "safety": "<raw output or null>"
+  },
+  "lint_findings": [
+    {
+      "severity": "high|medium|low|info",
+      "file": "path/to/file.py",
+      "line": 42,
+      "rule": "E501|naming|imports|typing|complexity|style|dead_code|docs",
+      "message": "Concise description",
+      "suggestion": "Fix with short code example"
+    }
+  ],
+  "security_findings": [
+    {
+      "severity": "critical|high|medium|low",
+      "file": "path/to/file.py",
+      "line": 42,
+      "cwe": "CWE-89",
+      "message": "Concise description",
+      "exploit_scenario": "Brief realistic scenario",
+      "remediation": "Specific fix with code example"
+    }
+  ],
+  "summary": "2-3 sentence overall assessment"
+}
+```
+
+---
+
+## Step 3: Synthesize and Post Review
+
+Once the specialist agent returns its JSON report, YOU (the orchestrator) perform a code quality pass on the same diff, checking:
+
+- Logic errors and off-by-one bugs
+- Error handling: bare `except:`, swallowed exceptions, missing finally blocks
+- Resource leaks: unclosed files, DB connections, HTTP sessions — use context managers
+- SOLID: single responsibility violations, god functions, tight coupling
+- Test coverage: are new public functions accompanied by tests?
+
+Then synthesize all three sources (lint report, security report, your quality review):
+
+1. Deduplicate overlapping findings
+2. Escalate severity if two or more agents flag the same issue
+3. Determine recommendation: **Request Changes** if any Critical/High exist, **Approve** if only Medium/Low/Info, **Comment** if informational only
+
+Write the review to the absolute path `/tmp/pr_review_NUMBER.md` using the Write tool (e.g. for PR #42: `/tmp/pr_review_42.md`). Do NOT use a relative path — always use the full `/tmp/` prefix. Then post it with:
+
+```bash
+gh pr comment NUMBER --repo OWNER/REPO --body-file /tmp/pr_review_NUMBER.md
+```
+
+Use this format for the review file:
+
+---
+
+```markdown
+## 🤖 AI Code Review — Python Multi-Agent
+
+### Summary
+[2–3 sentences: PR purpose, what was changed, overall quality verdict]
+
+### Recommendation
+[**Approve** | **Request Changes** | **Comment**]
+
+---
+
+### 🔒 Security Findings
+> Analysed by Security Agent · Bandit · Manual review
+
+#### Critical
+[findings with file:line references, or "None found"]
+
+#### High
+[findings, or "None found"]
+
+#### Medium / Low
+[findings, or "None found"]
+
+---
+
+### 🧹 Lint & Style Findings
+> Analysed by Lint Agent · Ruff · Mypy
+
+#### High
+[findings, or "None found"]
+
+#### Medium / Low
+[findings, or "None found"]
+
+---
+
+### 🏗️ Code Quality Findings
+> Analysed by Orchestrator
+
+#### High
+[findings, or "None found"]
+
+#### Medium / Low
+[findings, or "None found"]
+
+---
+
+### ✅ What's Good
+- [positive point 1]
+- [positive point 2]
+- [positive point 3]
+
+---
+
+<details>
+<summary>🔧 Raw Tool Output</summary>
+
+**Ruff:**
+\`\`\`
+[output or "not available in this environment"]
+\`\`\`
+
+**Mypy:**
+\`\`\`
+[output or "not available in this environment"]
+\`\`\`
+
+**Bandit:**
+\`\`\`
+[output or "not available in this environment"]
+\`\`\`
+</details>
+
+---
+*Reviewed by Claude AI — Lint Agent + Security Agent + Orchestrator · [`/pr-review`]*
+```
+
+---
 
 ## Severity Levels
 
-- **Critical**: Bugs that will cause runtime failures, security vulnerabilities that are exploitable
-- **High**: Significant issues that should be fixed before merging
-- **Medium**: Code smells and maintainability issues that should be addressed
-- **Low**: Minor improvements and suggestions
-- **Info**: FYI notes and observations
+| Level | Meaning |
+|-------|---------|
+| **Critical** | Exploitable security vulnerability or guaranteed runtime crash |
+| **High** | Significant bug or security issue — must fix before merging |
+| **Medium** | Code smell, missing type safety, moderate concern |
+| **Low** | Minor style, suggestions |
+| **Info** | FYI, optional improvement |
 
-## Step 3: Post Review Comment
-
-Use the **GitHub MCP** tool `create_issue_comment` to post your review:
-- owner: repository owner
-- repo: repository name
-- issue_number: PR number (PRs are issues in GitHub API)
-- body: Your formatted review (see format below)
-
-### Review Comment Format
-
-```markdown
-## AI Code Review
-
-### Summary
-[2-3 sentence summary of the PR purpose and overall code quality assessment]
-
-### Recommendation
-[Choose one: **Approve** | **Request Changes** | **Comment**]
-
-Use "Approve" if no critical or high issues found.
-Use "Request Changes" if critical issues exist.
-Use "Comment" for informational feedback only.
-
-### Findings
-
-#### Critical
-[List critical issues with `file:line` references, or "None found"]
-
-#### High
-[List high-priority issues with `file:line` references, or "None found"]
-
-#### Medium
-[List medium issues, or "None found"]
-
-#### Low/Info
-[List minor suggestions, or "None found"]
-
-### What's Good
-[Highlight 2-3 positive aspects of the PR - good patterns, clean code, etc.]
-
----
-*Reviewed by Claude AI via `/pr-review` skill using GitHub MCP*
-```
-
-## Guidelines
-
-1. **Be specific** - Always reference exact file paths and line numbers
-2. **Be constructive** - Explain WHY something is an issue and HOW to fix it
-3. **Be concise** - Avoid unnecessary verbosity
-4. **Be fair** - Acknowledge good practices, not just problems
-5. **Prioritize** - Focus on impactful issues over nitpicks
-6. **Context-aware** - Remember this is a diff, not the full codebase
-
-## Example Finding Format
+## Finding Format
 
 ```
-- `src/auth/login.py:45` - SQL injection vulnerability
-  User input directly interpolated into query. Use parameterized queries instead:
-  `cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))`
+- `path/to/file.py:42` — **[Rule / CWE]** Short title
+  Why: explanation of the problem
+  Fix: `corrected_code_snippet_or_pattern`
 ```
 
-## Usage Examples
+## Usage
 
-User says: `/pr-review OoWMWoO/ai-review#1`
-→ Review PR #1 in OoWMWoO/ai-review repo
-
-User says: `/pr-review 123`
-→ Ask for repo owner/name, then review PR #123
+```
+/pr-review owner/repo#123
+/pr-review owner/repo#123 +perf    # also include performance analysis
+```
