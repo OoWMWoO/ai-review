@@ -177,7 +177,6 @@ class WebhookHandler(BaseHTTPRequestHandler):
             claude_path = os.path.expanduser("~/.local/bin/claude")
             if not os.path.exists(claude_path):
                 claude_path = "claude"
-            _log("start", f"claude={claude_path}  api_key={'set (will remove)' if 'ANTHROPIC_API_KEY' in os.environ else 'not set'}")
 
             cmd = [
                 claude_path,

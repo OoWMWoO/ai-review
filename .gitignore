@@ -46,6 +46,9 @@ htmlcov/
 *.log
 logs/
 
+# AI review temp files (should live in /tmp but guard against misplacement)
+pr_review_*.md
+
 # OS
 .DS_Store
 Thumbs.db
