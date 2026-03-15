@@ -139,7 +139,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 claude_path,
                 "--print",
                 "--allowedTools",
-                "Bash(gh:*),Read,Grep,Glob",
+                "Agent,Bash(gh:*),Bash(ruff:*),Bash(mypy:*),Bash(bandit:*),Bash(safety:*),Read,Grep,Glob",
             ]
             print(f"   Running: {' '.join(cmd)}")
             print(f"   Prompt: {prompt}")
